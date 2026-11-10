@@ -10,8 +10,11 @@
   const h = (html) => { const t = document.createElement("template"); t.innerHTML = html.trim(); return t.content; };
   const tone = (label) => (/reliable/i.test(label) ? "" : /bullish/i.test(label) ? "bull" : /bearish/i.test(label) ? "bear" : "");
   const fmtD = (s) => new Date(s + "T00:00:00").toLocaleDateString(undefined, { month: "short", year: "numeric" });
-  const HZ = { 5: "1 week", 20: "1 month", 60: "3 months" };
-  const scoreWord = (n) => (n >= 70 ? "Strong" : n >= 58 ? "Some skill" : n >= 45 ? "Close to guessing" : "Worse than guessing");
+  const HZ = { 63: "3 months", 126: "6 months", 252: "12 months" };
+  const EV = { "Solid": "ev-solid", "Suggestive": "ev-mid", "Could be luck": "ev-low" };
+  const proven = (a) => a.forecast.horizons.some((x) => x.evidence === "Solid");
+  const scoreWord = (n, a) => (n >= 58 && a && !proven(a) ? "Promising, not yet proven"
+    : n >= 70 ? "Strong" : n >= 58 ? "Some skill" : n >= 45 ? "Close to guessing" : "Worse than guessing");
   const corrWord = (c) => { const a = Math.abs(c); return a < 0.1 ? "none" : a < 0.25 ? "weak" : a < 0.5 ? "moderate" : "strong"; };
   const banner = DATA.sample
     ? `<div class="banner">Showing simulated sample data. Run <code>python model/train.py</code> to load live market prices.</div>`
@@ -52,8 +55,8 @@
         <ol>
           <li><b>Data.</b> About 20 years of daily prices, plus official factor data: the Federal Reserve's dollar index, real interest rates and inflation expectations (FRED), the St. Louis Fed financial stress index, and a newspaper-based Geopolitical Risk Index.</li>
           <li><b>Factor analysis.</b> For each factor we measure how it moves with the asset, whether its moves have led the asset's next month, how that link has changed over time, and what happened after big rises or falls.</li>
-          <li><b>Models.</b> Logistic regression (a straight-line model), gradient-boosted trees (which can learn curved patterns and combinations of factors) and an ensemble of both each predict whether the price will be higher in 1 week, 1 month and 3 months.</li>
-          <li><b>Testing.</b> For every year since ${DATA.firstTestYear}, models are trained only on earlier years and then tested on that year. The best of the three is used for today's forecast, and its score is shown on every page.</li>
+          <li><b>Models.</b> Logistic regression (a straight-line model), gradient-boosted trees (which can learn curved patterns and combinations of factors) and an ensemble of both each predict whether the price will be higher in 3, 6 and 12 months. Inputs include 1 to 12-month trends and where each price and factor sits versus its last 3 years.</li>
+          <li><b>Testing.</b> For every year since ${DATA.firstTestYear}, models are trained only on earlier years and then tested on that year. The best of the three is used for today's forecast, its probabilities are calibrated against its own track record, and every forecast carries an evidence rating showing how likely its record is to be luck.</li>
         </ol>
         <p class="note">Updated ${DATA.generated}. Educational tool, not financial advice.</p>
       </section>
@@ -87,7 +90,7 @@
       <div class="stats">
         <div><b>${signed(f.corrAll)}</b><span>Moves together since 2006 (${corrWord(f.corrAll)})</span></div>
         <div><b>${signed(f.corr1y)}</b><span>Moves together, last year</span></div>
-        <div><b>${signed(f.lead)}</b><span>Predicts next month (${corrWord(f.lead)})</span></div>
+        <div><b>${signed(f.lead)}</b><span>Predicts next 12 months (${corrWord(f.lead)})</span></div>
         <div><b>${Math.round(f.levelPercentile * 100)}%</b><span>Today's level vs past 10 years</span></div>
       </div>
 
@@ -97,7 +100,7 @@
       <div class="tip" data-tip="${f.id}"></div>
 
       <h4>What happened next</h4>
-      <p class="note" style="margin-top:0">${a.name}'s return over the following month, grouped by how much ${f.name.toLowerCase()} moved in the month before (2006 to today).</p>
+      <p class="note" style="margin-top:0">${a.name}'s return over the following 12 months, grouped by how much ${f.name.toLowerCase()} moved in the 6 months before (2006 to today).</p>
       <div class="buckets">
         ${f.buckets.map((b, i) => `
           <div class="${i === f.nowBucket ? "now" : ""}">
@@ -110,28 +113,27 @@
       <h4>How the link has changed</h4>
       <div class="rchart" data-r="${f.id}"></div>
       <div class="tip" data-rtip="${f.id}"></div>
-      <p class="note">1-year rolling correlation of daily moves. Above the line they move together; below it they move in opposite directions. Last month's change: ${chg}.</p>
+      <p class="note">1-year rolling correlation of daily moves. Above the line they move together; below it they move in opposite directions. Change over the last 6 months: ${chg}.</p>
       <p class="note">${f.about} <br>Source: ${f.source}.</p>`;
   }
 
   function yearBars(yearly) {
-    const W = 600, H = 150, pad = { l: 8, r: 36, t: 10, b: 20 }, lo = 0.25, hi = 0.85;
+    const W = 600, H = 150, pad = { l: 8, r: 36, t: 10, b: 20 }, lo = 0, hi = 1;
     const bw = (W - pad.l - pad.r) / yearly.length;
     const y = (v) => pad.t + (1 - (v - lo) / (hi - lo)) * (H - pad.t - pad.b);
     const bars = yearly.map((r, i) => {
       const x = pad.l + i * bw, top = y(Math.max(lo, Math.min(hi, r.accuracy)));
-      const win = r.accuracy > r.baseline;
-      return `<rect x="${x + 3}" y="${top}" width="${bw - 6}" height="${y(lo) - top}" rx="2" fill="${win ? "#9fbea7" : "#d9a998"}"><title>${r.year}: ${Math.round(r.accuracy * 100)}% vs guessing ${Math.round(r.baseline * 100)}%</title></rect>
-        <line x1="${x + 1}" x2="${x + bw - 1}" y1="${y(r.baseline)}" y2="${y(r.baseline)}" stroke="#5c5c58" stroke-width="1.5"/>
+      const win = r.accuracy > 0.5;
+      return `<rect x="${x + 3}" y="${Math.min(top, y(lo) - 2)}" width="${bw - 6}" height="${Math.max(2, y(lo) - top)}" rx="2" fill="${win ? "#9fbea7" : "#d9a998"}"><title>${r.year}: ${Math.round(r.accuracy * 100)}% right (prices rose in ${Math.round(r.upShare * 100)}% of cases)</title></rect>
         ${i % 2 === 0 || yearly.length < 9 ? `<text x="${x + bw / 2}" y="${H - 5}" text-anchor="middle">${String(r.year).slice(2)}'</text>` : ""}`;
     }).join("");
-    const grid = [0.3, 0.5, 0.7].map((v) => `<line x1="${pad.l}" x2="${W - pad.r}" y1="${y(v)}" y2="${y(v)}" stroke="#f0f0ed"/><text x="${W - pad.r + 6}" y="${y(v) + 3}">${v * 100}%</text>`).join("");
+    const grid = [0, 0.5, 1].map((v) => `<line x1="${pad.l}" x2="${W - pad.r}" y1="${y(v)}" y2="${y(v)}" stroke="${v === 0.5 ? "#9a9a95" : "#f0f0ed"}"/><text x="${W - pad.r + 6}" y="${y(v) + 3}">${v * 100}%</text>`).join("");
     return `<svg viewBox="0 0 ${W} ${H}" class="chart">${grid}${bars}</svg>`;
   }
 
   function modelSection(a) {
     const hz = a.forecast.horizons, m = hz[1];
-    const cmp = a.model.comparison["20"];
+    const cmp = a.model.comparison["252"], m12 = hz[2];
     const imp = [...a.factors.map((f) => ({ name: f.name, v: f.importance })), { name: "Momentum & trend", v: a.momentum.importance }]
       .sort((x, y) => y.v - x.v);
     const maxI = Math.max(...imp.map((x) => Math.abs(x.v)), 0.002);
@@ -140,27 +142,29 @@
     return `
       <section class="model">
         <span class="label">Model &amp; accuracy</span>
-        <div class="scorehead"><span class="big">${a.score}<small> / 100</small></span><span>${scoreWord(a.score)}</span></div>
+        <div class="scorehead"><span class="big">${a.score}<small> / 100</small></span><span>${scoreWord(a.score, a)}</span></div>
         <div class="score"><div class="track"><i style="width:${a.score}%"></i><b style="left:50%"></b></div>
           <div class="ends"><span>0</span><span>50 = guessing</span><span>100</span></div></div>
         <p class="note">Tested year by year from ${fmtD(m.testFrom)} to ${fmtD(m.testTo)} (${m.testSize.toLocaleString()} trading days), always on data the model hadn't seen. Half the score is how often it was right compared with guessing; half is how well its probabilities separated up days from down days (AUC).</p>
 
         <h4>Forecast accuracy</h4>
         <div class="scroll"><table>
-          <thead><tr><th>Horizon</th><th>Model used</th><th>Right</th><th>Guessing</th><th>AUC</th></tr></thead>
-          <tbody>${hz.map((x) => `<tr><td>${HZ[x.days]}</td><td>${x.modelName.replace(" (average of both)", "")}</td>${cell(x)}<td>${Math.round(x.baseline * 100)}%</td><td>${x.auc.toFixed(2)}</td></tr>`).join("")}</tbody>
+          <thead><tr><th>Horizon</th><th>Model used</th><th>Right</th><th>Guessing</th><th>AUC</th><th>Evidence</th></tr></thead>
+          <tbody>${hz.map((x) => `<tr><td>${HZ[x.days]}</td><td>${x.modelName.replace(" (average of both)", "")}</td>${cell(x)}<td>${Math.round(x.baseline * 100)}%</td><td>${x.auc.toFixed(2)}</td><td><span class="ev ${EV[x.evidence]}">${x.evidence}</span></td></tr>`).join("")}</tbody>
         </table></div>
+        <p class="note" style="margin-top:-8px"><b>Evidence</b> counts only non-overlapping forecasts (a 12-month call made on Monday and one made on Tuesday are nearly the same bet). For the 12-month model that leaves just ${m12.independent} separate outcomes, with a ${Math.round(m12.pLuck * 100)}% chance that guessing would have done as well. Solid = under 5%; suggestive = under 20%.</p>
 
-        <h4>Model comparison · 1 month</h4>
+        <h4>Model comparison · 12 months</h4>
         <div class="scroll"><table>
           <thead><tr><th>Model</th><th>Score</th><th>Right</th><th>AUC</th></tr></thead>
-          <tbody>${cmp.map((x) => `<tr class="${x.model === m.model ? "chosen" : ""}"><td>${x.name}${x.model === m.model ? " ✓" : ""}</td><td>${x.score}</td>${cell(x)}<td>${x.auc.toFixed(2)}</td></tr>`).join("")}</tbody>
+          <tbody>${cmp.map((x) => `<tr class="${x.model === m12.model ? "chosen" : ""}"><td>${x.name}${x.model === m12.model ? " ✓" : ""}</td><td>${x.score}</td>${cell(x)}<td>${x.auc.toFixed(2)}</td></tr>`).join("")}</tbody>
         </table></div>
         <p class="note" style="margin-top:-8px">✓ = used for the forecast. Trees can learn curved patterns and combinations (e.g. "the dollar matters more when stress is high"); logistic regression only draws straight lines.</p>
 
-        <h4>Year by year · 1 month</h4>
+        <h4>Year by year · 12 months</h4>
         ${yearBars(a.model.yearly)}
-        <div class="legend"><span style="color:#9fbea7">Beat guessing</span><span style="color:#d9a998">Missed</span><span class="a">Guessing</span></div>
+        <div class="legend"><span style="color:#9fbea7">Right more often than wrong</span><span style="color:#d9a998">Wrong more often</span></div>
+        <p class="note">Each bar is the share of forecasts made that year that came true 12 months later. Because forecasts a few days apart are nearly the same bet, years swing between all right and all wrong.</p>
 
         <h4>Which factors the model relies on</h4>
         <div class="weights">${imp.map((x) => `<div><span>${x.name}</span><span class="wbar"><i class="${x.v >= 0 ? "up" : "down"}" style="width:${(Math.abs(x.v) / maxI) * 100}%"></i></span><span>${x.v >= 0 ? "" : "−"}${Math.abs(x.v * 100).toFixed(1)}</span></div>`).join("")}</div>
@@ -211,7 +215,7 @@
             <div class="tip" id="fctip"></div>
             <p class="label" style="margin:16px 0 0">Chance the price is higher in</p>
             <div class="probs">
-              ${[w, m, q].map((x) => `<div><b>${Math.round(x.probUp * 100)}%</b><span>${HZ[x.days]}</span></div>`).join("")}
+              ${[w, m, q].map((x) => `<div><b>${Math.round(x.probUp * 100)}%</b><span>${HZ[x.days]}</span><span class="ev ${EV[x.evidence]}">${x.evidence}</span></div>`).join("")}
             </div>
           </div>
 
@@ -219,13 +223,13 @@
             <span class="label">Recommendation</span>
             <h2>${rec.label}</h2>
             <p style="margin:0">${rec.text}</p>
-            <p class="note">Accuracy score ${a.score}/100 (${scoreWord(a.score).toLowerCase()}). Bullish = expected to rise; bearish = expected to fall. Not financial advice.</p>
+            <p class="note">Accuracy score ${a.score}/100 (${scoreWord(a.score, a).toLowerCase()}). Bullish = expected to rise; bearish = expected to fall. Not financial advice.</p>
           </div>
         </aside>
       </div>
     `));
 
-    const hist = a.history.slice(-120);
+    const hist = a.history.slice(-260);
     Charts.line(document.getElementById("fc"), {
       series: [
         { name: "Price", points: hist, color: "#5c5c58" },

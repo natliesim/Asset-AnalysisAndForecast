@@ -30,17 +30,19 @@ import pandas as pd
 import requests
 from sklearn.ensemble import HistGradientBoostingClassifier
 from sklearn.linear_model import LogisticRegression
+from scipy.stats import binomtest
 from sklearn.metrics import roc_auc_score
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
 
 sys.path.insert(0, str(Path(__file__).parent))
-from config import ASSETS, FACTORS, FIRST_TEST_YEAR, HORIZONS, START  # noqa: E402
+from config import ASSETS, EXPLAIN_H, FACTORS, FIRST_TEST_YEAR, HORIZONS, START  # noqa: E402
 
 warnings.filterwarnings("ignore", category=RuntimeWarning)
 ROOT = Path(__file__).resolve().parent.parent
 OUT = ROOT / "data" / "data.js"
 RNG = np.random.default_rng(0)
+PAST = 126  # factor analysis: the factor's last 6 months vs the asset's next 12
 
 
 # ------------------------------------------------------------------ data
@@ -101,8 +103,10 @@ def change(s, k, transform):
 def build_features(price, factors):
     cols, groups = {}, {}
     logp = np.log(price)
-    for k in (5, 20, 60, 120):
+    for k in (20, 60, 120, 250):
         cols[f"self_ret{k}"] = price.pct_change(k, fill_method=None)
+    # Where the price sits versus its last 3 years (stretched high or low).
+    cols["self_z3y"] = (logp - logp.rolling(756).mean()) / logp.rolling(756).std()
     vol20 = logp.diff().rolling(20).std()
     cols["self_vol20"] = vol20
     cols["self_volratio"] = vol20 / logp.diff().rolling(120).std()
@@ -111,10 +115,17 @@ def build_features(price, factors):
         groups[c] = "momentum"
     for key, s in factors.items():
         t = FACTORS[key]["transform"]
-        for k in (5, 20, 60):
+        new = []
+        for k in (20, 60, 120, 250):
             cols[f"{key}_chg{k}"] = change(s, k, t)
+            new.append(f"{key}_chg{k}")
         cols[f"{key}_level"] = (s - s.rolling(252).mean()) / s.rolling(252).std()
-        for c in (f"{key}_chg5", f"{key}_chg20", f"{key}_chg60", f"{key}_level"):
+        cols[f"{key}_z3y"] = (s - s.rolling(756).mean()) / s.rolling(756).std()
+        new += [f"{key}_level", f"{key}_z3y"]
+        if t == "diff":  # for rates, the level itself matters (e.g. real rates at 2%)
+            cols[f"{key}_raw"] = s
+            new.append(f"{key}_raw")
+        for c in new:
             groups[c] = key
     return pd.DataFrame(cols), groups
 
@@ -123,8 +134,10 @@ def readable(col, asset):
     key, kind = col.split("_", 1) if not col.startswith("real_rates") else ("real_rates", col[11:])
     name = asset["name"] if key == "self" else FACTORS[key]["name"]
     return {
-        "ret5": f"{name}: 1-week return", "ret20": f"{name}: 1-month return",
-        "ret60": f"{name}: 3-month return", "ret120": f"{name}: 6-month return",
+        "ret20": f"{name}: 1-month return", "ret60": f"{name}: 3-month return",
+        "ret120": f"{name}: 6-month return", "ret250": f"{name}: 12-month return",
+        "z3y": f"{name}: level vs past 3 years", "raw": f"{name}: current level",
+        "chg120": f"{name}: 6-month change", "chg250": f"{name}: 12-month change",
         "vol20": f"{name}: volatility", "volratio": f"{name}: volatility vs normal",
         "ma200": f"{name}: distance from 200-day average",
         "chg5": f"{name}: 1-week change", "chg20": f"{name}: 1-month change",
@@ -157,6 +170,21 @@ class Ensemble:
         return np.mean([m.predict_proba(X) for m in self.ms], axis=0)
 
 
+class Calibrated:
+    """Re-map a model's probabilities using its own walk-forward record.
+    A model whose past calls were weak gets pulled toward 50%."""
+
+    def __init__(self, model, oos_p, oos_y):
+        self.model = model
+        z = np.log(np.clip(oos_p, 1e-4, 1 - 1e-4) / (1 - np.clip(oos_p, 1e-4, 1 - 1e-4)))
+        self.cal = LogisticRegression(C=0.5).fit(z.to_numpy().reshape(-1, 1), oos_y)
+
+    def predict_proba(self, X):
+        p = np.clip(self.model.predict_proba(X)[:, 1], 1e-4, 1 - 1e-4)
+        z = np.log(p / (1 - p)).reshape(-1, 1)
+        return self.cal.predict_proba(z)
+
+
 def make(name):
     return Ensemble() if name == "ensemble" else MODELS[name][1]()
 
@@ -187,7 +215,26 @@ def walk_forward(X, y, h):
     return pd.concat(rows), data
 
 
-def evaluate(oos, name):
+def evidence(oos, name, h):
+    """Overlapping forecasts aren't independent: a 12-month call made on
+    Monday and one made on Tuesday are nearly the same bet. Count only
+    non-overlapping forecasts (averaged over several start offsets) and ask
+    how likely guessing would be to do this well."""
+    accs, naive = [], []
+    for off in range(0, h, max(h // 4, 1)):
+        sub = oos.iloc[off::h]
+        accs.append(float(((sub[name] >= 0.5) == sub["y"]).mean()))
+        naive.append(float((sub["naive"] == sub["y"]).mean()))
+    n = max(len(oos) // h, 1)
+    hits = int(round(np.mean(accs) * n))
+    # Compare against guessing (coin flip or always-the-usual, whichever is better).
+    guess = min(max(float(np.mean(naive)), 0.5), 0.95)
+    pval = float(binomtest(hits, n, guess, alternative="greater").pvalue)
+    label = ("Solid" if pval < 0.05 else "Suggestive" if pval < 0.2 else "Could be luck")
+    return {"independent": n, "pLuck": round(pval, 3), "evidence": label}
+
+
+def evaluate(oos, name, h):
     p, y = oos[name], oos["y"]
     pred = (p >= 0.5).astype(float)
     acc = float((pred == y).mean())
@@ -197,7 +244,7 @@ def evaluate(oos, name):
     up = pred == 1
     return {"accuracy": round(acc, 4), "baseline": round(base, 4), "auc": round(auc, 4),
             "hitRateUp": round(float(y[up].mean()), 4) if up.any() else None,
-            "brier": round(float(((p - y) ** 2).mean()), 4)}
+            "brier": round(float(((p - y) ** 2).mean()), 4), **evidence(oos, name, h)}
 
 
 def score_of(ev):
@@ -256,13 +303,13 @@ def factor_analysis(asset, price, s, key):
 
     # Does the factor's last month say anything about the asset's next month?
     # Sample every 20 days so periods don't overlap.
-    past = change(s, 20, t)
-    fwd = price.shift(-20) / price - 1
-    pair = pd.DataFrame({"past": past, "fwd": fwd}).dropna()[::20]
+    past = change(s, PAST, t)
+    fwd = price.shift(-EXPLAIN_H) / price - 1
+    pair = pd.DataFrame({"past": past, "fwd": fwd}).dropna()[::21]
     lead = float(pair["past"].corr(pair["fwd"]))
 
     # What happened next after big rises / falls in the factor.
-    pair5 = pd.DataFrame({"past": past, "fwd": fwd}).dropna()[::5]
+    pair5 = pd.DataFrame({"past": past, "fwd": fwd}).dropna()[::21]
     lo, hi = pair5["past"].quantile([1 / 3, 2 / 3])
     buckets = []
     for label, mask in (("Fell the most", pair5["past"] <= lo),
@@ -273,7 +320,7 @@ def factor_analysis(asset, price, s, key):
                         "upShare": round(float((sub > 0).mean()), 3), "n": int(len(sub))})
 
     cur = s.dropna()
-    recent = float(change(cur, 20, t).iloc[-1])
+    recent = float(change(cur, PAST, t).iloc[-1])
     hist10 = cur.tail(2520)
     pctile = float((hist10 < cur.iloc[-1]).mean())
     now_bucket = 0 if recent <= lo else 2 if recent >= hi else 1
@@ -305,10 +352,10 @@ def describe(asset, key, fa, push):
     if r and (min(r) < -0.1 < 0.1 < max(r)):
         stability = " The link has flipped sign over the past five years, so it is not reliable on its own."
     return (f"Since 2006, {an} {rel} {nm} (correlation {c:+.2f}). "
-            f"After months when {nm} rose the most, {an} was higher a month later "
+            f"After the 6-month periods when {nm} rose the most, {an} was higher a year later "
             f"{b_hi['upShare'] * 100:.0f}% of the time (average {b_hi['avgReturn'] * 100:+.1f}%); after the biggest falls, "
             f"{b_lo['upShare'] * 100:.0f}% of the time ({b_lo['avgReturn'] * 100:+.1f}%).{stability} "
-            f"Over the last month it moved {move}, a “{now['label'].lower()}” month, and the model reads it as "
+            f"Over the last 6 months it moved {move} (“{now['label'].lower()}”), and the model reads it as "
             f"{effect}.")
 
 
@@ -321,7 +368,7 @@ def series_out(s, n=None, digits=4):
     return [[d.strftime("%Y-%m-%d"), round(float(v), digits)] for d, v in s.items()]
 
 
-def forecast_path(price, probs, days=60):
+def forecast_path(price, probs, days=252):
     logp = np.log(price.dropna())
     sigma = float(logp.diff().tail(60).std())
     pts = [(0, 0.0)]
@@ -338,7 +385,9 @@ def forecast_path(price, probs, days=60):
 
 
 def recommendation(asset, horizons, score):
-    p = 0.25 * horizons[0]["probUp"] + 0.5 * horizons[1]["probUp"] + 0.25 * horizons[2]["probUp"]
+    ev12 = horizons[-1]["evidence"]
+    # Lean on the 12-month model, where testing found the most signal.
+    p = 0.2 * horizons[0]["probUp"] + 0.3 * horizons[1]["probUp"] + 0.5 * horizons[2]["probUp"]
     n = asset["name"].lower()
     if p >= 0.60:
         label, text = "Bullish", f"The model expects {n} to rise. A reasonable time to buy or add."
@@ -357,6 +406,9 @@ def recommendation(asset, horizons, score):
                 f"worse than guessing for {n}, so it shouldn't drive a decision. Use the factor analysis instead.")
     elif score < 55:
         text += " In testing this model was only slightly better than guessing, so treat this as weak evidence."
+    elif ev12 != "Solid":
+        text += (f" The 12-month record rests on only {horizons[-1]['independent']} separate outcomes, "
+                 f"so it could partly be luck. Treat it as one input, not a verdict.")
     return {"label": label, "score": round(float(p), 3), "text": text}
 
 
@@ -372,9 +424,9 @@ def run_asset(asset, prices, all_factors):
         y = (price.shift(-h) > price).astype(float)
         y[price.shift(-h).isna()] = np.nan
         oos, data = walk_forward(X, y, h)
-        evs = {n: evaluate(oos, n) for n in ("logit", "gbm", "ensemble")}
+        evs = {n: evaluate(oos, n, h) for n in ("logit", "gbm", "ensemble")}
         best = max(evs, key=lambda n: score_of(evs[n]))
-        model = make(best).fit(data[X.columns], data["y"])
+        model = Calibrated(make(best).fit(data[X.columns], data["y"]), oos[best], oos["y"])
         latest = X.dropna().iloc[[-1]]
         p, push = push_today(model, data[X.columns], latest, groups)
         probs[h] = p
@@ -386,7 +438,7 @@ def run_asset(asset, prices, all_factors):
                          "testSize": len(oos), "trainStart": data.index[0].strftime("%Y-%m-%d"), **ev})
         comparison[h] = [{"model": n, "name": MODEL_NAMES[n], "score": round(score_of(evs[n])), **evs[n]}
                          for n in ("logit", "gbm", "ensemble")]
-        if h == 20:
+        if h == EXPLAIN_H:
             pushes = push
             yearly = []
             for yr, g in oos.groupby("year"):

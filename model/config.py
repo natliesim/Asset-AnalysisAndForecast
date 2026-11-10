@@ -107,5 +107,7 @@ ASSETS = [
      "factors": ["oil", "equities", "usd", "geopolitical", "stress"]},
 ]
 
-# Forecast horizons in trading days (~1 week, ~1 month, ~1 quarter).
-HORIZONS = [5, 20, 60]
+# Forecast horizons in trading days (~3, 6 and 12 months).
+HORIZONS = [63, 126, 252]
+# Horizon used for the factor explanations, importance and year-by-year chart.
+EXPLAIN_H = 252

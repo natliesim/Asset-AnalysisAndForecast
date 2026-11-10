@@ -29,15 +29,21 @@ that were actually known on each day.
    biggest rises, biggest falls, and quiet months.
 2. **Models.** Logistic regression, gradient-boosted trees
    (scikit-learn `HistGradientBoostingClassifier`) and an ensemble of both
-   predict whether the price is higher in 1 week, 1 month and 3 months.
-   Inputs: 1-week/1-month/3-month changes in each factor, each factor's
-   level vs its past year, and the asset's own returns, volatility and
-   distance from its 200-day average.
+   predict whether the price is higher in 3, 6 and 12 months.
+   Inputs: 1, 3, 6 and 12-month changes in each factor, each factor's level
+   vs its past 1 and 3 years (and the raw level for interest rates), and the
+   asset's own 1–12 month returns, volatility, distance from its 200-day
+   average and position vs its past 3 years.
 3. **Walk-forward testing.** For each year since 2012, models train only on
    earlier data (with a gap so labels never overlap) and predict that year.
    "Guessing" is the better of a coin flip and always picking the usual
-   outcome. The best model per horizon makes today's forecast.
-4. **Explanations.** Each factor's push on today's forecast (probability with
+   outcome. The best model per horizon makes today's forecast, with its
+   probabilities calibrated against its own walk-forward record.
+5. **Evidence rating.** Overlapping forecasts are nearly the same bet, so
+   each horizon is also scored on non-overlapping forecasts only, with a
+   binomial test against guessing: *Solid* (p < 0.05), *Suggestive*
+   (p < 0.2) or *Could be luck*.
+6. **Explanations.** Each factor's push on today's forecast (probability with
    vs without that factor at a typical value), permutation importance over the
    last 3 years, and logistic regression weights.
 
