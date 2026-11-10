@@ -1,52 +1,58 @@
 # Asset Analysis & Forecast
 
-A clean, white webpage that forecasts gold, silver, oil, copper, platinum and
-natural gas with machine learning, and explains *why* through the factors that
-drive each market (US dollar, interest rates, inflation, geopolitical risk,
-demand).
+A clean, white webpage that analyses and forecasts gold, silver, oil, copper,
+platinum and natural gas with machine learning, and explains each forecast
+through the factors that drive the market.
 
-## How it works
+## Data (~20 years, daily)
 
-1. `model/train.py` downloads ~8 years of daily prices from Yahoo Finance for
-   each asset and its factors (tickers are in `model/config.py`).
-2. For each asset it trains a **logistic regression** per horizon
-   (1 week, 1 month, 3 months) that predicts: *will the price be higher?*
-   Inputs are recent moves in each factor plus the asset's own momentum.
-3. The model is tested on the latest 20% of history it never saw; that accuracy
-   and a naive baseline are shown on the page so you can judge how much to trust it.
-4. Because the model is linear, each factor's push up or down is read directly
-   from its coefficients and shown next to the factor.
-5. Results are written to `data/data.js`, which the page reads.
+| Factor | Series | Source |
+| --- | --- | --- |
+| US Dollar | Broad trade-weighted dollar index (`DTWEXBGS`) | FRED |
+| Real interest rates | 10-year TIPS yield (`DFII10`) | FRED |
+| Inflation expectations | 10-year breakeven inflation (`T10YIE`) | FRED |
+| Financial stress | St. Louis Fed Financial Stress Index (`STLFSI4`) | FRED |
+| Growth outlook | 10y − 2y Treasury yield curve (`T10Y2Y`) | FRED |
+| Geopolitical risk | Daily Geopolitical Risk Index, 7-day avg | Caldara & Iacoviello |
+| Demand | S&P 500, China large caps (FXI), copper, oil | Yahoo Finance |
+| Asset prices | Gold, silver, oil, copper, platinum, gas futures | Yahoo Finance |
 
-| Factor | Proxy |
-| --- | --- |
-| US Dollar | DXY index (`DX-Y.NYB`) |
-| Interest rates | 10-year Treasury yield (`^TNX`) |
-| Inflation | TIP / IEF ratio (inflation expectations) |
-| Geopolitical risk | VIX volatility index |
-| Demand | S&P 500, China large caps (FXI), copper |
+Each factor is delayed by its publication lag, so the model only uses values
+that were actually known on each day.
+
+## How it works (`model/train.py`)
+
+1. **Factor analysis.** For every asset/factor pair: correlation since 2006
+   and over the last year, whether the factor's last month predicted the
+   asset's next month, a 1-year rolling correlation showing how the link
+   changed, and the asset's average next-month return after the factor's
+   biggest rises, biggest falls, and quiet months.
+2. **Models.** Logistic regression, gradient-boosted trees
+   (scikit-learn `HistGradientBoostingClassifier`) and an ensemble of both
+   predict whether the price is higher in 1 week, 1 month and 3 months.
+   Inputs: 1-week/1-month/3-month changes in each factor, each factor's
+   level vs its past year, and the asset's own returns, volatility and
+   distance from its 200-day average.
+3. **Walk-forward testing.** For each year since 2012, models train only on
+   earlier data (with a gap so labels never overlap) and predict that year.
+   "Guessing" is the better of a coin flip and always picking the usual
+   outcome. The best model per horizon makes today's forecast.
+4. **Explanations.** Each factor's push on today's forecast (probability with
+   vs without that factor at a typical value), permutation importance over the
+   last 3 years, and logistic regression weights.
+
+Accuracy score (0–100): 50 = guessing. Half from AUC (0.70 = full marks), half
+from accuracy gained over guessing (+15 points = full marks).
 
 ## Run it
 
 ```bash
 pip install -r requirements.txt
-python model/train.py          # live market data
-python model/train.py --sample # simulated data, no internet needed
-open index.html                # or: python -m http.server
+python model/train.py   # ~3 minutes; writes data/data.js
+open index.html         # or: python -m http.server
 ```
 
-The committed `data/data.js` holds real market data. If you run with
-`--sample`, the page shows a banner saying the data is simulated.
-
-## Keep it up to date
-
-`.github/workflows/update-forecasts.yml` re-trains every weekday after the US
-close and commits fresh data. Turn on GitHub Pages (Settings → Pages → deploy
-from branch) to host the site for free.
-
-## Add an asset
-
-Add an entry to `ASSETS` in `model/config.py` with its Yahoo ticker, unit
-conversion and factor list, then re-run the script.
+`.github/workflows/update-forecasts.yml` re-runs this every weekday once
+merged into the default branch.
 
 *Educational tool, not financial advice.*

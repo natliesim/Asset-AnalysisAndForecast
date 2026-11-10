@@ -18,13 +18,14 @@ const Charts = (() => {
   }
 
   // series: [{points:[[date,val]], color, width, dash, name}], band: [[date,lo,hi]]
-  function line(target, { series, band = null, width = 600, height = 200, format = (n) => n.toFixed(2), tip = null, marker = null }) {
+  function line(target, { series, band = null, width = 600, height = 200, format = (n) => n.toFixed(2), tip = null, marker = null, zero = false, fixed = null }) {
     const W = width, H = height, pad = { l: 8, r: 52, t: 10, b: 22 };
     const dates = [...new Set(series.flatMap((s) => s.points.map((p) => p[0])).concat(band ? band.map((b) => b[0]) : []))].sort();
     const idx = new Map(dates.map((d, i) => [d, i]));
     const vals = series.flatMap((s) => s.points.map((p) => p[1])).concat(band ? band.flatMap((b) => [b[1], b[2]]) : []);
     let lo = Math.min(...vals), hi = Math.max(...vals);
     const span = hi - lo || 1; lo -= span * 0.06; hi += span * 0.06;
+    if (fixed) [lo, hi] = fixed;
     const x = (d) => pad.l + (idx.get(d) / (dates.length - 1)) * (W - pad.l - pad.r);
     const y = (n) => pad.t + (1 - (n - lo) / (hi - lo)) * (H - pad.t - pad.b);
 
@@ -41,6 +42,7 @@ const Charts = (() => {
       const t = el("text", { x: x(d), y: H - 6, "text-anchor": i === 0 ? "start" : i === 3 ? "end" : "middle" });
       t.textContent = fmtDate(d); svg.appendChild(t);
     }
+    if (zero && lo < 0 && hi > 0) svg.appendChild(el("line", { x1: pad.l, x2: W - pad.r, y1: y(0), y2: y(0), stroke: "#cfcfca" }));
     if (marker) svg.appendChild(el("line", { x1: x(marker), x2: x(marker), y1: pad.t, y2: H - pad.b, stroke: "#e2e2de", "stroke-dasharray": "3 3" }));
     if (band) {
       const top = band.map((b) => `${x(b[0])},${y(b[2])}`), bot = band.map((b) => `${x(b[0])},${y(b[1])}`).reverse();
@@ -55,7 +57,7 @@ const Charts = (() => {
     // hover
     const guide = el("line", { y1: pad.t, y2: H - pad.b, stroke: "#d0d0cb", visibility: "hidden" });
     svg.appendChild(guide);
-    const lookups = series.map((s) => new Map(s.points.map((p) => [p[0], p[1]])));
+    const lookups = series.map((s) => new Map(s.points.map((p) => [p[0], p.length > 2 ? p[2] : p[1]])));
     const move = (ev) => {
       const r = svg.getBoundingClientRect();
       const px = ((ev.touches ? ev.touches[0].clientX : ev.clientX) - r.left) * (W / r.width);
@@ -63,7 +65,7 @@ const Charts = (() => {
       const d = dates[i];
       guide.setAttribute("x1", x(d)); guide.setAttribute("x2", x(d)); guide.setAttribute("visibility", "visible");
       if (tip) {
-        const parts = series.map((s, k) => (lookups[k].has(d) ? `${s.name}: ${format(lookups[k].get(d))}` : null)).filter(Boolean);
+        const parts = series.map((s, k) => (lookups[k].has(d) ? `${s.name}: ${(s.format || format)(lookups[k].get(d))}` : null)).filter(Boolean);
         tip.textContent = `${new Date(d + "T00:00:00").toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" })} · ${parts.join(" · ")}`;
       }
     };
