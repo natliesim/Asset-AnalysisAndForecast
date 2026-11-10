@@ -38,7 +38,7 @@
             </div>
             <div class="row" style="margin-top:12px">
               <span class="pill ${tone(a.recommendation.label)}">${a.recommendation.label}</span>
-              <span class="label">${Math.round(a.forecast.horizons[1].probUp * 100)}% up · 1 mo</span>
+              <span class="label">Accuracy ${a.score}/100</span>
             </div>
           </a>`).join("")}
       </div>
@@ -65,6 +65,41 @@
     const style = c >= 0 ? `left:50%;width:${w}%;background:var(--up)` : `right:50%;width:${w}%;background:var(--down)`;
     const word = c > 0.05 ? "Pushes up" : c < -0.05 ? "Pushes down" : "Neutral";
     return `<span class="meter">${word}<span class="bar"><i style="${style}"></i></span></span>`;
+  }
+
+  const scoreWord = (n) => (n >= 65 ? "Strong" : n >= 55 ? "Fair" : n >= 45 ? "Weak, close to guessing" : "Poor, worse than guessing");
+  const scoreBar = (n) => `<div class="score"><div class="track"><i style="width:${n}%"></i><b style="left:50%"></b></div>
+      <div class="ends"><span>0</span><span>50 = guessing</span><span>100</span></div></div>`;
+  const fmtD = (s) => new Date(s + "T00:00:00").toLocaleDateString(undefined, { month: "short", year: "numeric" });
+
+  function modelSection(a) {
+    const hz = a.forecast.horizons, names = ["1 week", "1 month", "3 months"];
+    const top = a.model.coefficients.slice(0, 6), maxW = Math.max(...top.map((c) => Math.abs(c.weight)), 0.01);
+    const m = hz[1];
+    return `
+      <section class="model">
+        <span class="label">Model &amp; accuracy</span>
+        <div class="scorehead"><span class="big">${a.score}<small> / 100</small></span><span>${scoreWord(a.score)}</span></div>
+        ${scoreBar(a.score)}
+        <p class="note">The score blends how often the model was right compared with simply guessing the more common outcome, and how well its probabilities rank good and bad days (AUC). It is measured on data the model never trained on.</p>
+        <table>
+          <thead><tr><th>Horizon</th><th>Accuracy</th><th>Guessing</th><th>AUC</th><th>When it said "up"</th></tr></thead>
+          <tbody>${hz.map((h, i) => `<tr><td>${names[i]}</td>
+            <td class="${h.accuracy > h.baseline ? "pos" : "neg"}">${Math.round(h.accuracy * 100)}%</td>
+            <td>${Math.round(h.baseline * 100)}%</td><td>${h.auc.toFixed(2)}</td>
+            <td>${h.hitRateUp == null ? "–" : Math.round(h.hitRateUp * 100) + "% right"}</td></tr>`).join("")}</tbody>
+        </table>
+        <dl>
+          <dt>Model</dt><dd>${a.model.type}</dd>
+          <dt>Inputs</dt><dd>${a.model.features} features: 5- and 20-day changes in each factor, plus ${a.name.toLowerCase()}'s own trend and volatility</dd>
+          <dt>Trained on</dt><dd>${fmtD(m.trainFrom)} – ${fmtD(m.trainTo)} (${m.trainSize.toLocaleString()} days)</dd>
+          <dt>Tested on</dt><dd>${fmtD(m.testFrom)} – ${fmtD(m.testTo)} (${m.testSize.toLocaleString()} days, unseen)</dd>
+          <dt>Data</dt><dd>Yahoo Finance daily closes · ${a.ticker}</dd>
+        </dl>
+        <h3 style="margin:22px 0 8px">What the 1-month model weighs most</h3>
+        <div class="weights">${top.map((c) => `<div><span>${c.feature}</span><span class="wbar"><i class="${c.weight >= 0 ? "up" : "down"}" style="width:${(Math.abs(c.weight) / maxW) * 100}%"></i></span><span>${c.weight >= 0 ? "+" : "−"}${Math.abs(c.weight).toFixed(2)}</span></div>`).join("")}</div>
+        <p class="note">Positive weight: when this rises, the model leans toward "price up". Weights are on standardised inputs so they can be compared.</p>
+      </section>`;
   }
 
   function rebase(points, n = 260) {
@@ -101,6 +136,7 @@
             <summary><h3>Momentum &amp; trend</h3>${meter(a.momentum)}<span class="plus">+</span></summary>
             <div class="body"><p>${a.name}'s own recent price trend and volatility. Markets often keep moving in the same direction for a while, so the model also looks at where the price has been heading.</p></div>
           </details>
+          ${modelSection(a)}
         </section>
 
         <aside class="side">
@@ -125,7 +161,7 @@
             <span class="label">Recommendation</span>
             <h2>${rec.label}</h2>
             <p style="margin:0">${rec.text}</p>
-            <p class="note">Back-test accuracy (1-month model): ${Math.round(m.accuracy * 100)}% vs ${Math.round(m.baseline * 100)}% from always guessing the more common outcome. Not financial advice.</p>
+            <p class="note">Model accuracy score: ${a.score}/100 (${scoreWord(a.score).toLowerCase()}). See "Model &amp; accuracy" for details. Not financial advice.</p>
           </div>
         </aside>
       </div>

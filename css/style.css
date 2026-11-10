@@ -152,3 +152,31 @@ a.card:hover { border-color: #dcdcd7; box-shadow: 0 2px 14px rgba(0,0,0,.03); }
   main { padding: 32px 16px 64px; }
   h1 { font-size: 1.9rem; }
 }
+
+/* ---- model & accuracy ---- */
+.model { margin-top: 44px; }
+.scorehead { display: flex; align-items: baseline; gap: 14px; margin-top: 6px; }
+.scorehead > span:last-child { font-family: var(--sans); font-size: 0.85rem; }
+.score { margin: 12px 0 6px; max-width: 420px; }
+.score .track { position: relative; height: 8px; border-radius: 6px; background: var(--surface); border: 1px solid var(--line); }
+.score .track i { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 6px; background: var(--accent); opacity: .55; }
+.score .track b { position: absolute; top: -4px; bottom: -4px; width: 1px; background: var(--text-faint); }
+.score .ends { display: flex; justify-content: space-between; font-family: var(--sans); font-size: 0.68rem; color: var(--text-faint); margin-top: 4px; }
+.model table { width: 100%; border-collapse: collapse; margin: 18px 0; font-family: var(--sans); font-size: 0.8rem; }
+.model th { text-align: left; font-weight: 500; color: var(--text-faint); padding: 6px 8px 6px 0; border-bottom: 1px solid var(--line); }
+.model td { padding: 8px 8px 8px 0; border-bottom: 1px solid var(--line); color: var(--text); }
+.model td.pos { color: var(--up); } .model td.neg { color: var(--down); }
+.model dl { display: grid; grid-template-columns: 110px 1fr; gap: 6px 14px; margin: 0; font-size: 0.92rem; }
+.model dt { font-family: var(--sans); font-size: 0.72rem; color: var(--text-faint); padding-top: 3px; }
+.model dd { margin: 0; }
+.weights { display: grid; gap: 6px; font-family: var(--sans); font-size: 0.78rem; }
+.weights div { display: grid; grid-template-columns: minmax(0, 1fr) 90px 44px; gap: 10px; align-items: center; }
+.weights span:last-child { text-align: right; color: var(--text-faint); }
+.wbar { height: 6px; background: var(--surface); border-radius: 4px; overflow: hidden; }
+.wbar i { display: block; height: 100%; }
+.wbar i.up { background: var(--up); } .wbar i.down { background: var(--down); }
+@media (max-width: 640px) {
+  .model table th:nth-child(5), .model table td:nth-child(5) { display: none; }
+  .model dl { grid-template-columns: 1fr; gap: 2px; }
+  .model dd { margin-bottom: 8px; }
+}

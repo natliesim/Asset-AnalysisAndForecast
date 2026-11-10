@@ -20,6 +20,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import roc_auc_score
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
 
@@ -134,7 +135,7 @@ def build_features(price, factors):
     for k in LOOKBACKS + [60]:
         cols[f"self_{k}"] = price.pct_change(k)
         groups[f"self_{k}"] = "momentum"
-    cols["self_vol"] = np.log(price).diff().rolling(20).std()
+    cols["self_vol"] = np.log(price.where(price > 0)).diff().rolling(20).std()
     groups["self_vol"] = "momentum"
     for key, s in factors.items():
         for k in LOOKBACKS:
@@ -159,8 +160,17 @@ def fit_horizon(X, price, h):
                              LogisticRegression(C=0.3, max_iter=1000))
 
     m = model().fit(train[X.columns], train["y"])
-    acc = float((m.predict(test[X.columns]) == test["y"]).mean())
+    pred = m.predict(test[X.columns])
+    acc = float((pred == test["y"]).mean())
     base = float(max(test["y"].mean(), 1 - test["y"].mean()))
+    auc = float(roc_auc_score(test["y"], m.predict_proba(test[X.columns])[:, 1]))
+    up = pred == 1
+    hit_up = float((test["y"][up] == 1).mean()) if up.any() else None
+    period = {"trainFrom": train.index[0].strftime("%Y-%m-%d"),
+              "trainTo": train.index[-1].strftime("%Y-%m-%d"),
+              "testFrom": test.index[0].strftime("%Y-%m-%d"),
+              "testTo": test.index[-1].strftime("%Y-%m-%d"),
+              "trainSize": len(train), "testSize": len(test)}
 
     m = model().fit(data[X.columns], data["y"])
     latest = X.dropna().iloc[[-1]]
@@ -170,14 +180,15 @@ def fit_horizon(X, price, h):
     z = scaler.transform(latest)[0]
     contrib = dict(zip(X.columns, lr.coef_[0] * z))
     coefs = dict(zip(X.columns, lr.coef_[0]))
-    return {"p": p, "acc": acc, "base": base, "n": len(data),
+    return {"p": p, "acc": acc, "base": base, "n": len(data), "auc": auc,
+            "hitUp": hit_up, "period": period,
             "contrib": contrib, "coefs": coefs}
 
 
 def forecast_path(price, probs, days=60):
     """Turn up/down probabilities into a price path with an uncertainty band.
     Expected move at each horizon = (2p - 1) x typical size of an N-day move."""
-    logp = np.log(price)
+    logp = np.log(price.where(price > 0)).dropna()
     sigma = float(logp.diff().tail(60).std())
     pts = [(0, 0.0)]
     for h, p in sorted(probs.items()):
@@ -240,6 +251,22 @@ def series_out(s, n):
     return [[d.strftime("%Y-%m-%d"), round(float(v), 4)] for d, v in s.items()]
 
 
+def readable(col, asset):
+    key, win = col.rsplit("_", 1)
+    name = asset["name"] if key == "self" else FACTORS[key]["name"]
+    return f"{name} volatility (20d)" if win == "vol" else f"{name} change ({win}d)"
+
+
+def accuracy_score(horizons):
+    """0-100 score: how much better than guessing, averaged over horizons.
+    50 = no better than guessing; 100 = right every time."""
+    vals = []
+    for h in horizons:
+        lift = (h["accuracy"] - h["baseline"]) / max(1 - h["baseline"], 1e-6)
+        vals.append(50 + 25 * np.clip(lift, -1, 1) + 25 * np.clip((h["auc"] - 0.5) * 2, -1, 1))
+    return int(round(float(np.clip(np.mean(vals), 0, 100))))
+
+
 def run_asset(asset, prices):
     price = prices[asset["ticker"]].dropna()
     factors = {k: factor_series(prices, k) for k in asset["factors"]}
@@ -252,12 +279,16 @@ def run_asset(asset, prices):
         probs[h] = r["p"]
         horizons.append({"days": h, "probUp": round(r["p"], 4),
                          "accuracy": round(r["acc"], 4),
-                         "baseline": round(r["base"], 4), "samples": r["n"]})
+                         "baseline": round(r["base"], 4), "samples": r["n"],
+                         "auc": round(r["auc"], 4),
+                         "hitRateUp": None if r["hitUp"] is None else round(r["hitUp"], 4),
+                         **r["period"]})
         if h == 20:  # explain the 1-month model
+            coef_rows = sorted(r["coefs"].items(), key=lambda kv: -abs(kv[1]))
             for col, v in r["contrib"].items():
                 contrib_by_factor[groups[col]] = contrib_by_factor.get(groups[col], 0) + v
 
-    rets = np.log(price).diff()
+    rets = np.log(price.where(price > 0)).diff()
     out_factors = []
     for k, s in factors.items():
         fr = change(s, 1, FACTORS[k]["transform"]).reindex(rets.index)
@@ -289,8 +320,15 @@ def run_asset(asset, prices):
                      for d, m, lo, hi in forecast_path(price, probs)],
         },
         "momentum": round(mom, 3),
+        "model": {
+            "type": "Logistic regression (L2, C=0.3) on standardised features",
+            "features": len(X.columns),
+            "coefficients": [{"feature": readable(c, asset), "weight": round(float(v), 3)}
+                             for c, v in coef_rows],
+        },
         "factors": out_factors,
         "recommendation": recommendation(asset, horizons),
+        "score": accuracy_score(horizons),
     }
 
 
