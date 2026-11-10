@@ -35,8 +35,8 @@ python model/train.py --sample # simulated data, no internet needed
 open index.html                # or: python -m http.server
 ```
 
-The committed `data/data.js` holds **simulated sample data** (the page shows a
-banner saying so) until you run the script with live data.
+The committed `data/data.js` holds real market data. If you run with
+`--sample`, the page shows a banner saying the data is simulated.
 
 ## Keep it up to date
 
